@@ -3,7 +3,7 @@
 #include <functional>
 #include <memory>
 
-#include </home/criogenesis/Downloads/TwitchCppBot/include/SocketController.hpp>
+#include </home/criogenesis/Downloads/TwitchCppBot/include/Connection.hpp>
 
 namespace TwitchBot
 {
@@ -18,13 +18,19 @@ namespace TwitchBot
              * @brief This is the type of function used by the class to create
              * new connections to the twitch server.
              */
-            typedef std::function< std::shared_ptr< SocketController >() > ConnectionFactory;
+            typedef std::function< std::shared_ptr< Connection >() > ConnectionFactory;
 
             /**
              * @brief This is the type of function used to notify the user when
              * the agent has successfully logged into the Twitch server.
              */
             typedef std::function < void() > LoggedInDelegate;
+
+            /**
+             * @brief This is the type of function used to notify the user when
+             * the agent completes logging out of the Twitch server.
+             */
+            typedef std::function < void() > LoggedOutDelegate;
 
         // Lifecycle Management
         public:
@@ -58,6 +64,15 @@ namespace TwitchBot
              * user agent successfully logs into the Twitch server.
              */
             void SetLoggedInDelegate(LoggedInDelegate loggedInDelegate);
+
+            /**
+             * @brief This method is is called to setup a callback to happen
+             * when the user agent completes logging out the Twitch server.
+             *
+             * @param[in] loggedOutDelegate This is the function to call when
+             * the user agent complets logging out the Twitch server.
+             */
+            void SetLoggedOutDelegate(LoggedOutDelegate loggedOutDelegate);
 
             /**
              * @brief This method starts the process of logging into the Twitch
