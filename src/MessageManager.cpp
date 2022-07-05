@@ -63,10 +63,11 @@ namespace
 
         /**
          * This is used with the LogIn action, to provide the nickname to be
-           used
-         * in the chat session.
-        * /
+           used in the chat session.
+         */
+
         std::string nickname;
+
         /**
          * This is used with the LogIn action, to provide the client with OAuth
          * token to to be used to authenticate with the server.
@@ -133,11 +134,63 @@ namespace TwitchBot
 
         /**
          * This is the interface to the current connection to the Twitch server,
-         * if we are connected
+         * if we are connected.
          */
         std::shared_ptr< Connection > connection;
 
+        /**
+         * All incoming data in the form of a buffer to receive the characters
+         * coming in from the Twitch server, until a complete line has been
+         * received, removed from the buffer, and handeled.
+         */
+        std::string dataReceived;
+
         //Methods
+        
+        /**
+         * This method extracts the next line received from the Twitch server.
+         *
+         * @param[out] lineStored this is where to store the next line received.
+         *
+         * @return an indication of whether or not a complete line was extracted
+         * is returned.
+         */
+        std::string GetNextLine(std::string& line))
+        {
+            // "dataReceived.find" will attempt to find the indeces of the where
+            // CRLF would start in "dataReceived" and set it equal to "lineEnd"
+            // (probably being returned back as an int)
+            const auto lineEnd = dataReceived.find(CRLF);
+            
+            // We simply return out of the function if it fails to find the CRLF
+            if (lineEnd == std::string::npos)
+            {
+                return false;
+            }
+
+            // "line" should now contain the revelant data without the CRLF
+            line = dataReceived.substr(0, lineEnd);
+            dataReceived = dataReceived.substr(lineEnd, CRLF.length());
+            return true;
+        }
+
+        /**
+         * This method is is called to whenever any message is received from the
+         * Twitch server or the user agent.
+         *
+         * @param[in] message This is the message received from the Twitch
+         * server.
+         */
+        void MessageReceived(const std::string& message)
+        {
+            dataReceived += message;
+            std::string line;
+            while(GetNextLine(line))
+            {
+                
+            }
+            
+        }
 
         /**
          * This method signals the worker thread to stop.
@@ -168,19 +221,29 @@ namespace TwitchBot
                         {
                             if(connection != nullptr)
                             {
-                                // TODO: Write code here in case LogIn is asked
-                                // and we're already logged in.
+                                break;
                             }
 
                             connection = connectionFactory();
+                            connection->SetMessageReceivedDelegate
+                            (
+                                std::bind(&Impl::MessageReceived, this, std::placeholders::_1)
+                            );
                             if(connection->Connect())
                             {
                                 connection->Send("Pass oauth:", nextAction.token + CRLF);
                                 connection->Send("NICK", nextAction.nickname + CRLF);
+                                if(loggedInDelegate != nullptr)
+                                {
+                                    loggedInDelegate();
+                                }
                             }
                             else
                             {
-                                // TODO: Need to do something if this fails
+                                if(loggedOutDelegate != nullptr)
+                                {
+                                    loggedOutDelegate();
+                                }
                             }
                             
                             break;
@@ -190,11 +253,15 @@ namespace TwitchBot
                             if(connection != nullptr)
                             {
                                 connection->Send("QUIT :", nextAction.message + CRLF);
-                                
+                                connection->Disconnect();
                                 //Close the connection (after data is
                                 //transmitted)
                                 {
                                     
+                                }
+                                if(loggedOutDelegate != nullptr)
+                                {
+                                    loggedOutDelegate();
                                 }
                             }
                             break;
@@ -268,10 +335,11 @@ namespace TwitchBot
 
     }
 
-    void MessageManager::LogOut()
+    void MessageManager::LogOut(const std::string& farewell)
     {
         std::lock_guard< decltype(impl_->mutex) > lock(impl_->mutex);
         Action action;
+        action.message = farewell;
         action.type = ActionType::LogOut;
         impl_->actions.push_back(action);
         impl_->wakeWorker.notify_one();

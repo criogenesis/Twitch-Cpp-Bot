@@ -13,6 +13,7 @@ namespace TwitchBot
      */
     class MessageManager
     {
+        // Types
         public:
             /**
              * @brief This is the type of function used by the class to create
@@ -28,7 +29,9 @@ namespace TwitchBot
 
             /**
              * @brief This is the type of function used to notify the user when
-             * the agent completes logging out of the Twitch server.
+             * the agent completes logging out of the Twitch server, or when the
+             * connection is closed, or when it could not be established in the
+             * first place.
              */
             typedef std::function < void() > LoggedOutDelegate;
 
@@ -92,8 +95,11 @@ namespace TwitchBot
             /**
              * @brief This process starts the progress of logging out of the
              * Twitch server.
+             *
+             * @param[in] farewell this is the message sent back to the Twitch
+             * server just before the connection is closed.
              */
-            void LogOut();
+            void LogOut(const std::string& farewell);
 
         private:
             /**
