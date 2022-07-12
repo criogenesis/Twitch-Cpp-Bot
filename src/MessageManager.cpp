@@ -1,8 +1,10 @@
-
+#include <chrono>
 #include <condition_variable>
 #include <mutex>
 #include <deque>
+#include <queue>
 #include <thread>
+#include <vector>
 #include </home/criogenesis/Downloads/TwitchCppBot/include/MessageManager.hpp>
 
 namespace
@@ -13,6 +15,13 @@ namespace
      *
      */
     const std::string CRLF = "\r\n";
+
+    /**
+     * This is the maximum amount of time to wait for the Twitch server to
+     * provide the Message Of The Day (MOTD), confirming a successful log-in,
+     * before timing out.
+     */
+    const std::chrono::seconds LOG_IN_TIMEOUT_PERIOD(1);
 
     /**
      * These are the states in which the MessageManager class can be.
@@ -47,7 +56,12 @@ namespace
         /**
          * LogOut of Twitch chat, and close thee active connection.
          */
-        LogOut
+        LogOut,
+
+        /**
+         * Process all messages received from the Twitch server.
+         */
+        ProcessMessageRecieved
     };
 
     /**
@@ -65,7 +79,6 @@ namespace
          * This is used with the LogIn action, to provide the nickname to be
            used in the chat session.
          */
-
         std::string nickname;
 
         /**
@@ -76,9 +89,54 @@ namespace
 
         /**
          * This is used with multiple actions, to provide the client with some
-         * text to be sent to the server
+         * text to be sent to the server.
          */
         std::string message;
+    };
+
+    /**
+     * This contains all the information parsed from a single message from the
+     * Twitch server.
+     *
+     */
+    struct Message
+    {
+        /**
+         * If this is not an empty string, the message included is a prefix
+         * which is stored here without the leading colon (:) character.
+         */
+        std::string prefix;
+
+        /**
+         * This is the command portion of the message, which may be a 3 digit
+         * code, or an IRC command.
+         *
+         * If it's empty, the message was invalid or there was no message.
+         */
+        std::string command;
+
+        /**
+         * These are the parameters(If any), provided within the message.
+         */
+        std::vector< std::string > parameters;
+    };
+
+    /** 
+     * This represents a condition that the worker is awaiting, which might time
+     * out. 
+     */
+    struct TimeoutConditions
+    {
+        /**
+         * This is the type of action which prompted the wait condition.
+         */
+        ActionType type;
+
+        /**
+         * This is the time, according to the time keeper,  at which the
+         * condition will be considered to have timed out.
+         */
+         double expiration = 0.0;
     };
 }
 
@@ -132,30 +190,23 @@ namespace TwitchBot
          */
         std::deque< Action > actions;
 
-        /**
-         * This is the interface to the current connection to the Twitch server,
-         * if we are connected.
-         */
-        std::shared_ptr< Connection > connection;
-
-        /**
-         * All incoming data in the form of a buffer to receive the characters
-         * coming in from the Twitch server, until a complete line has been
-         * received, removed from the buffer, and handeled.
-         */
-        std::string dataReceived;
-
         //Methods
         
         /**
-         * This method extracts the next line received from the Twitch server.
+         * This method extracts the next message received from the Twitch
+         * server.
          *
-         * @param[out] lineStored this is where to store the next line received.
+         * @param[in,out] dataReceived All incoming data in the form of a buffer
+         * to receive the characters coming in from the Twitch server, until a
+         * complete line has been received, removed from the buffer, and
+         * handeled.
+         *
+         * @param[out] message this is where to store the next message received.
          *
          * @return an indication of whether or not a complete line was extracted
          * is returned.
          */
-        std::string GetNextLine(std::string& line))
+        std::string GetNextMessage(std::string& dataReceived, Message& message))
         {
             // "dataReceived.find" will attempt to find the indeces of the where
             // CRLF would start in "dataReceived" and set it equal to "lineEnd"
@@ -169,27 +220,134 @@ namespace TwitchBot
             }
 
             // "line" should now contain the revelant data without the CRLF
-            line = dataReceived.substr(0, lineEnd);
-            dataReceived = dataReceived.substr(lineEnd, CRLF.length());
+            const auto line = dataReceived.substr(0, lineEnd);
+
+            // Remove the line from the buffer
+            dataReceived = dataReceived.substr(lineEnd + CRLF.length());
+
+            // Unpack the message from the line
+            size_t offset = 0;
+            int state = 0;
+            message = Message();
+            while (offset < line.length())
+            {
+                switch (state)
+                {
+                    // First character of the line could be ':', which singals a
+                    // prefix or is the first charater of the command.
+                    case 0:
+                    {
+                        if (line[offset] == ':')
+                        {
+                            state = 1;
+                        }
+                        else
+                        {
+
+                        }
+                    } break;
+                    
+                    // Prefix
+                    case 1:
+                    {
+                        if (line[offset] == ' ')
+                        {
+                            state = 2;
+                        }
+                        else
+                        {
+                            message.prefix += line[offset];
+                        }
+
+                    } break;
+
+                    // First character of command
+                    case 2:
+                    {
+                        if (line[offset] != ' ')
+                        {
+                            state = 3;
+                            message.command += line[offset];
+                        }
+
+                    } break;
+                    
+                    // Command
+                    case 3:
+                    {
+                        if (line[offset] == ' ')
+                        {
+                            state = 4;
+                        }
+                        else
+                        {
+                            message.command += line[offset];
+                        }
+                    } break;
+
+                    // First character of parameter
+                    case 4:
+                    {
+                        if (line[offset] == ':')
+                        {
+                            state = 6;
+                            message.parameters.push_back("");
+                        }
+                        else if (line[offset] != ' ')
+                        {
+                            state = 5;
+                            message.parameters.push_back(line.substr(offset, 1));
+                        }
+
+                    } break;
+                    
+                    // Parameter (not last, or last having no spaces)
+                    case 5:
+                    {
+                        if (line[offset] == ' ')
+                        {
+                            state = 4;
+                        }
+                        else
+                        {
+                            message.parameter.back() += line[offset];
+                        }
+                    } break;
+
+                    // Last Parameter (May include spaces)
+                    case 6:
+                    {
+                        message.parameter.back() += line[offset];
+                    } break;
+                }
+                ++offset;
+            }
+
+            // Invalid end states
+            if ((state == 0) || (state == 1) || (state == 2))
+            {
+                message.command.clear();
+                // If logging facility is being implemented in the future, an
+                // error would be logged here for an invalid message.
+            }
             return true;
         }
 
         /**
-         * This method is is called to whenever any message is received from the
-         * Twitch server or the user agent.
+         * This method is called to whenever any message is received from the
+         * Twitch server for the user agent.
          *
-         * @param[in] message This is the message received from the Twitch
+         * @param[in] rawText This is the raw text received from the Twitch
          * server.
          */
-        void MessageReceived(const std::string& message)
+        void MessageReceived(const std::string& rawText)
         {
-            dataReceived += message;
-            std::string line;
-            while(GetNextLine(line))
-            {
-                
-            }
-            
+            std::lock_guard< decltype(mutex) > lock(mutex);
+            Action action;
+            action.type = ActionType::ProcessMessageRecieved;
+            action.message = rawText;
+            impl_->actions.push_back(action);
+            impl_->wakeWorker.notify_one();
         }
 
         /**
@@ -208,6 +366,25 @@ namespace TwitchBot
          */
         void Worker()
         {
+            // This is the interface to the current connection to the Twitch
+            // server, if we are connected.
+            std::shared_ptr< Connection > connection;
+
+            // All incoming data in the form of a buffer to receive the
+            // characters coming in from the Twitch server, until a complete
+            // line has been received, removed from the buffer, and handeled.
+            std::string dataReceived;
+
+            // This flag indiciates whether or not the client has finished
+            // logging into the Twitch server (we've received the MOTD from the
+            // server).
+            bool loggedIn = false;
+
+
+            // This holds onto any conditions that the worker is awaiting, which
+            // might time out.
+            std::priority_queue< TimeoutConditions > timeoutConditions;
+            
             std::unique_lock< decltype(mutex) > lock(mutex);
             while(!stopWorker)
             {
@@ -215,6 +392,7 @@ namespace TwitchBot
                 {
                     const auto nextAction = actions.front();
                     actions.pop_front();
+                    lock.unlock();
                     switch (nextAction.type)
                     {
                         case ActionType::LogIn:
@@ -233,6 +411,13 @@ namespace TwitchBot
                             {
                                 connection->Send("Pass oauth:", nextAction.token + CRLF);
                                 connection->Send("NICK", nextAction.nickname + CRLF);
+
+                                if(timeKeeper != nullptr)
+                                {
+                                    TimeoutConditions timeoutConditions;
+                                    timeoutConditions.type = ActionType::LogIn;
+                                    timeoutConditions.expiration = timeKeeper->GetCurrentTime() + LOG_IN_TIMEOUT_PERIOD;
+                                }
                                 if(loggedInDelegate != nullptr)
                                 {
                                     loggedInDelegate();
@@ -246,8 +431,9 @@ namespace TwitchBot
                                 }
                             }
                             
-                            break;
-                        }
+                            
+                        } break;
+
                         case ActionType::LogOut: 
                         {
                             if(connection != nullptr)
@@ -264,8 +450,32 @@ namespace TwitchBot
                                     loggedOutDelegate();
                                 }
                             }
-                            break;
-                        }
+                            
+                        } break;
+
+                        case ActionType::ProcessMessageRecieved:
+                        {
+                            dataReceived += nextAction.message;
+                            Message message;
+                            while(GetNextMessage(dataRecieved, message))
+                            {
+                                if (message.command.empty())
+                                {
+                                    continue;
+                                }
+                                if (message.command == "376") // RPL_ENDOFMOTD (RFC_1459)
+                                {
+                                    if(!loggedIn)
+                                    {
+                                        loggedIn = true;
+                                        if (loggedInDelegate != nullptr)
+                                        {
+                                            loggedInDelegate();
+                                        }
+                                    }
+                                }
+                            }
+                        } break;
 
                         // Potentially place diagnostic actions inside this
                         // function for the future.
@@ -274,24 +484,40 @@ namespace TwitchBot
                         // understand etc."
                         defafult: 
                         {
-                            break;
-                        }
+                            
+                        } break;
                     }
+                    lock.lock();
                 }
-                wakeWorker.wait
-                (
-                    lock,
-                    [this]
-                    {
-                        return
-                        (
-                            stopWorker 
-                            ||
-                            !actions.empty()
-                        );
-                    }
-                );
-            
+
+                if (!actions.empty() && actions.front().delay)
+                {
+                    wakeWorker.wait_for
+                    (
+                        lock,
+                        std::chrono::miliseconds(50),
+                        [this]
+                        {
+                            return stopWorker;
+                        }
+                    );
+                }
+                else
+                {
+                    wakeWorker.wait
+                    (
+                        lock,
+                        [this]
+                        {
+                            return
+                            (
+                                stopWorker 
+                                ||
+                                !actions.empty()
+                            );
+                        }
+                    );
+                }
             }
         }
     };
@@ -327,9 +553,9 @@ namespace TwitchBot
     {
         std::lock_guard< decltype(impl_->mutex) > lock(impl_->mutex);
         Action action;
+        action.type = ActionType::LogIn;
         action.nickname = nickname;
         action.token = token;
-        action.type = ActionType::LogIn;
         impl_->actions.push_back(action);
         impl_->wakeWorker.notify_one();
 
@@ -339,8 +565,8 @@ namespace TwitchBot
     {
         std::lock_guard< decltype(impl_->mutex) > lock(impl_->mutex);
         Action action;
-        action.message = farewell;
         action.type = ActionType::LogOut;
+        action.message = farewell;
         impl_->actions.push_back(action);
         impl_->wakeWorker.notify_one();
     }
