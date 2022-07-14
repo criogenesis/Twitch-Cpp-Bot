@@ -21,7 +21,7 @@ namespace
      * provide the Message Of The Day (MOTD), confirming a successful log-in,
      * before timing out.
      */
-    const std::chrono::seconds LOG_IN_TIMEOUT_PERIOD(1);
+    constexpr double LOG_IN_TIMEOUT_SECONDS(5);
 
     /**
      * These are the states in which the MessageManager class can be.
@@ -61,7 +61,12 @@ namespace
         /**
          * Process all messages received from the Twitch server.
          */
-        ProcessMessageRecieved
+        ProcessMessageRecieved,
+
+        /**
+         * Handle when the server closes its end of the connection.
+         */
+        ServerDisconnected
     };
 
     /**
@@ -125,8 +130,10 @@ namespace
      * This represents a condition that the worker is awaiting, which might time
      * out. 
      */
-    struct TimeoutConditions
+    struct TimeoutCondition
     {
+        // Properties 
+
         /**
          * This is the type of action which prompted the wait condition.
          */
@@ -137,6 +144,22 @@ namespace
          * condition will be considered to have timed out.
          */
          double expiration = 0.0;
+
+         // Methods
+
+         /**
+          * This method is used to sort timeout conditions by expiration time.
+          *
+          * @param[in] rhs This is the other timeout condition to compare with
+          * this one.
+          *
+          * @return this returns true of the other timeout condition will expire
+          * first.
+          */
+          bool operator<(const TimeoutCondition& rhs) const
+          {
+            return( expiration > rhs.expiration );
+          }
     };
 }
 
@@ -152,6 +175,11 @@ namespace TwitchBot
          * This is the method to call in order to connect to the Twitch server.
          */
         ConnectionFactory connectionFactory;
+
+        /**
+         * This is the object used to measure elapsed time.
+         */
+        std::shared_ptr< TimeKeeper > timeKeeper;
 
         /**
          * This is the function to call when the user agent successfully logs
@@ -206,7 +234,7 @@ namespace TwitchBot
          * @return an indication of whether or not a complete line was extracted
          * is returned.
          */
-        std::string GetNextMessage(std::string& dataReceived, Message& message))
+        bool GetNextMessage(std::string& dataReceived, Message& message)
         {
             // "dataReceived.find" will attempt to find the indeces of the where
             // CRLF would start in "dataReceived" and set it equal to "lineEnd"
@@ -310,14 +338,14 @@ namespace TwitchBot
                         }
                         else
                         {
-                            message.parameter.back() += line[offset];
+                            message.parameters.back() += line[offset];
                         }
                     } break;
 
                     // Last Parameter (May include spaces)
                     case 6:
                     {
-                        message.parameter.back() += line[offset];
+                        message.parameters.back() += line[offset];
                     } break;
                 }
                 ++offset;
@@ -346,8 +374,45 @@ namespace TwitchBot
             Action action;
             action.type = ActionType::ProcessMessageRecieved;
             action.message = rawText;
-            impl_->actions.push_back(action);
-            impl_->wakeWorker.notify_one();
+            actions.push_back(action);
+            wakeWorker.notify_one();
+        }
+
+        /**
+        * This method is called when the Twitch server closes its end of the
+        * connection.
+        */
+        void ServerDisconnected()
+        {
+            std::lock_guard< decltype(mutex) > lock(mutex);
+            Action action;
+            action.type = ActionType::ServerDisconnected;
+            action.message = rawText;
+            actions.push_back(action);
+            wakeWorker.notify_one();
+        }
+
+        /**
+         * This method is called whenever the user agent disconnects from the
+         * Twitch server
+         *
+         * @param[in,out] connection This is the connection to disconnect.
+         *
+         * @param[in] farewell If not empty, the user agent should send a QUIT
+         * command before disconnecting, and this is the message to inlcude in
+         * the QUIT command.
+         */
+        void Disconnect(Connection& connection, const std::string farewell = "")
+        {
+            if (!farewell.empty())
+            {
+                connection->Send("QUIT :", farewell + CRLF);
+            }
+            connection->Disconnect();
+            if(loggedOutDelegate != nullptr)
+            {
+                loggedOutDelegate();
+            }
         }
 
         /**
@@ -383,11 +448,39 @@ namespace TwitchBot
 
             // This holds onto any conditions that the worker is awaiting, which
             // might time out.
-            std::priority_queue< TimeoutConditions > timeoutConditions;
+            std::priority_queue< TimeoutCondition > timeoutConditions;
             
             std::unique_lock< decltype(mutex) > lock(mutex);
             while(!stopWorker)
             {
+                lock.unlock();
+                if (!timeoutConditions.empty())
+                {
+                    // Priority queue is being used here because, if we have
+                    // multiple things being used here, they'll be sorted based
+                    // on their timeout expirations, therefore whatever is at
+                    // the top of the priority queue realistically should be the
+                    // next thing that should expire regardless of the order we
+                    // pushed it onto the queue.
+                    const auto timeoutCondition = timeoutConditions.top();
+                    if(timeKeeper->GetCurrentTime() >= timeoutCondition.expiration)
+                    {
+                        switch (timeoutCondition.type)
+                        {
+                            case ActionType::LogIn:
+                            {
+                                Disconnect(*connection, "Timeout waiting for MOTD");
+                            } 
+
+                            default:
+                            {
+
+                            } break;
+                        } 
+                        timeoutConditions.pop();
+                    }
+                }
+                lock.lock();
                 while(!actions.empty())
                 {
                     const auto nextAction = actions.front();
@@ -407,6 +500,11 @@ namespace TwitchBot
                             (
                                 std::bind(&Impl::MessageReceived, this, std::placeholders::_1)
                             );
+
+                            connection->SetDisconnectedDelegate
+                            (
+                                std::bind(&Impl::ServerDisconnected, this)
+                            );
                             if(connection->Connect())
                             {
                                 connection->Send("Pass oauth:", nextAction.token + CRLF);
@@ -414,9 +512,10 @@ namespace TwitchBot
 
                                 if(timeKeeper != nullptr)
                                 {
-                                    TimeoutConditions timeoutConditions;
-                                    timeoutConditions.type = ActionType::LogIn;
-                                    timeoutConditions.expiration = timeKeeper->GetCurrentTime() + LOG_IN_TIMEOUT_PERIOD;
+                                    TimeoutCondition timeoutCondition;
+                                    timeoutCondition.type = ActionType::LogIn;
+                                    timeoutCondition.expiration = timeKeeper->GetCurrentTime() + LOG_IN_TIMEOUT_SECONDS;
+                                    timeoutConditions.push(timeoutCondition);
                                 }
                                 if(loggedInDelegate != nullptr)
                                 {
@@ -438,17 +537,7 @@ namespace TwitchBot
                         {
                             if(connection != nullptr)
                             {
-                                connection->Send("QUIT :", nextAction.message + CRLF);
-                                connection->Disconnect();
-                                //Close the connection (after data is
-                                //transmitted)
-                                {
-                                    
-                                }
-                                if(loggedOutDelegate != nullptr)
-                                {
-                                    loggedOutDelegate();
-                                }
+                                Disconnect(*connection, nextAction.message);
                             }
                             
                         } break;
@@ -457,7 +546,7 @@ namespace TwitchBot
                         {
                             dataReceived += nextAction.message;
                             Message message;
-                            while(GetNextMessage(dataRecieved, message))
+                            while(GetNextMessage(dataReceived, message))
                             {
                                 if (message.command.empty())
                                 {
@@ -477,6 +566,10 @@ namespace TwitchBot
                             }
                         } break;
 
+                        case ActionType::ServerDisconnected:
+                        {
+                            Disconnect(*connection);
+                        } break;
                         // Potentially place diagnostic actions inside this
                         // function for the future.
                         //
@@ -490,15 +583,20 @@ namespace TwitchBot
                     lock.lock();
                 }
 
-                if (!actions.empty() && actions.front().delay)
+                if (!timeoutConditions.empty())
                 {
                     wakeWorker.wait_for
                     (
                         lock,
-                        std::chrono::miliseconds(50),
+                        std::chrono::milliseconds(50),
                         [this]
                         {
-                            return stopWorker;
+                            return
+                            (
+                                stopWorker 
+                                ||
+                                !actions.empty()
+                            );
                         }
                     );
                 }
@@ -534,9 +632,14 @@ namespace TwitchBot
         impl_->worker = std::thread(&Impl::Worker, impl_.get());
     }
 
-    void MessageManager::SetSocketConnection(ConnectionFactory connectionFactory)
+    void MessageManager::SetConnectionFactory(ConnectionFactory connectionFactory)
     {
         impl_ ->connectionFactory = connectionFactory;
+    }
+
+    void MessageManager::SetTimeKeeper(std::shared_ptr< TimeKeeper > timeKeeper)
+    {
+        impl_ ->timeKeeper = timeKeeper;
     }
 
     void MessageManager::SetLoggedInDelegate(LoggedInDelegate loggedInDelegate)
