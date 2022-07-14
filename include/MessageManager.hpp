@@ -4,6 +4,7 @@
 #include <memory>
 
 #include </home/criogenesis/Downloads/TwitchCppBot/include/Connection.hpp>
+#include </home/criogenesis/Downloads/TwitchCppBot/include/TimeKeeper.hpp>
 
 namespace TwitchBot
 {
@@ -57,7 +58,16 @@ namespace TwitchBot
              * @param[in] connectionFactory This is the method to call in order
              * to connect to the Twitch server.
              */
-            void SetSocketConnection(ConnectionFactory connectionFactory);
+            void SetConnectionFactory(ConnectionFactory connectionFactory);
+
+            /**
+             * @brief This method will provide a means of measuring elapsed time
+             * periods.
+             *
+             * @param[in] timeKeeper This is the object used to measure elapsed
+             * time periods.
+             */
+            void SetTimeKeeper(std::shared_ptr< TimeKeeper > timeKeeper);
             
             /**
              * @brief This method is is called to setup a callback to happen
