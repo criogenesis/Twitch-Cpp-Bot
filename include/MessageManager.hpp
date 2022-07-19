@@ -36,6 +36,8 @@ namespace TwitchBot
              */
             typedef std::function < void() > LoggedOutDelegate;
 
+            typedef std::function < void(const std::string& channel, const std::string& user)) > JoinDelegate;
+
         // Lifecycle Management
         public:
             ~MessageManager() noexcept;
@@ -87,6 +89,9 @@ namespace TwitchBot
              */
             void SetLoggedOutDelegate(LoggedOutDelegate loggedOutDelegate);
 
+
+            void SetJoinDelegate(JoinDelegate joinDelegate);
+
             /**
              * @brief This method starts the process of logging into the Twitch
              * server.
@@ -103,13 +108,21 @@ namespace TwitchBot
             );
 
             /**
-             * @brief This process starts the progress of logging out of the
-             * Twitch server.
+             * this process starts the progress of logging out of the Twitch
+             * server.
              *
              * @param[in] farewell this is the message sent back to the Twitch
              * server just before the connection is closed.
              */
             void LogOut(const std::string& farewell);
+
+
+            /**
+             * This method starts the process of joining the Twitch channel
+             *
+             * @param[in] channel This is the name of the channel to join.
+             */
+            void Join(const std::string& channel);
 
         private:
             /**

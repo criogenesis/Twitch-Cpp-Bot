@@ -97,6 +97,11 @@ namespace
          * text to be sent to the server.
          */
         std::string message;
+        
+        /**
+         * This is the name of the channel that the bot will be connecting to.
+         */
+        std::string channel;
     };
 
     /**
@@ -192,6 +197,8 @@ namespace TwitchBot
          * of the Twitch server.
          */
         LoggedOutDelegate loggedOutDelegate;
+
+        JoinDelegate joinDelegate;
 
         /**
          * This is used to synchronize access to the object.
@@ -563,6 +570,27 @@ namespace TwitchBot
                                         }
                                     }
                                 }
+                                else if(message.command == "JOIN")
+                                {
+                                    if((message.parameters.size() < 1) && (message.parameters[0].length() < 2))
+                                    {
+                                        continue;
+                                    }
+                                    const auto nicknameDelimiter = message.prefix.find('!');
+
+                                    //Not true of nicknameDelimiter fails to
+                                    //find the ! delimter in the message prefiix
+                                    if(nicknameDelimiter == string::npos)
+                                    {
+                                        continue;
+                                    }
+                                    const auto nickname = message.prefix.substr(0, nicknameDelimiter);
+                                    const auto channel = message.parameters[0].substr(1);
+                                    if(joinDelegate != nullptr)
+                                    {
+                                        joinDelegate(nickname, channel);
+                                    }
+                                }
                             }
                         } break;
 
@@ -570,6 +598,12 @@ namespace TwitchBot
                         {
                             Disconnect(*connection);
                         } break;
+
+                        case ActionType::Join:
+                        {
+                            connection->Send("JOIN #", nextAction.message + CRLF);
+                        } break;
+                        
                         // Potentially place diagnostic actions inside this
                         // function for the future.
                         //
@@ -652,6 +686,11 @@ namespace TwitchBot
         impl_ ->loggedOutDelegate = loggedOutDelegate;
     }
 
+    void MessageManager::SetJoinDelegate(JoinDelegate joinDelegate)
+    {
+        impl_ ->joinDelegate = joinDelegate;
+    }
+
     void MessageManager::LogIn(const std::string& nickname, const std::string& token)
     {
         std::lock_guard< decltype(impl_->mutex) > lock(impl_->mutex);
@@ -670,6 +709,16 @@ namespace TwitchBot
         Action action;
         action.type = ActionType::LogOut;
         action.message = farewell;
+        impl_->actions.push_back(action);
+        impl_->wakeWorker.notify_one();
+    }
+
+    void MessageManager::Join(const std::string& channel)
+    {
+        std::lock_guard< decltype(impl_->mutex) > lock(impl_->mutex);
+        Action action;
+        action.type = ActionType::Join;
+        action.channel = channel;
         impl_->actions.push_back(action);
         impl_->wakeWorker.notify_one();
     }

@@ -3,9 +3,9 @@ namespace TwitchBot
 {
 
     /**
-     * This represents the time Keeping requirements of the Twitch::Server. To
-     * integrate the Twitch::Server into a larger program, implement this
-     * interface in terms of the actual server time.
+     * This represents the time Keeping requirements of the Twitch classes. To
+     * integrate TwitchBot into a larger program, implement this interface in
+     * terms of real time.
      */
     class TimeKeeper
     {
